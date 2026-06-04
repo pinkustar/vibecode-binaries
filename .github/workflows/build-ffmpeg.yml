@@ -11,7 +11,7 @@ on:
     inputs:
       ffmpeg_tag:
         description: "FFmpeg git tag to build"
-        default: "n7.1.1"
+        default: "n8.1.1"
 
 permissions:
   contents: write
