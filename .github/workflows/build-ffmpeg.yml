@@ -18,7 +18,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Pinned (not windows-latest) to freeze the MSYS2/MinGW toolchain so rebuilds stay reproducible,
+    # and to dodge the silent windows-latest -> windows-2025 migration (GitHub, ~2026-06-15). Move to
+    # 2025 deliberately + re-verify the produced ffmpeg.exe when GitHub eventually retires 2022.
+    runs-on: windows-2022
     defaults:
       run:
         shell: msys2 {0}
