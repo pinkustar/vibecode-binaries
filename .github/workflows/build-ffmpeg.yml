@@ -1,0 +1,89 @@
+name: build-minimal-ffmpeg
+
+# Builds a minimal, decode-only, statically-linked LGPL-2.1 ffmpeg.exe for vibecode (the Shazam-style
+# recognizer; sibling to the pinkustar/vibra build). Only the demuxers/decoders vibecode needs are
+# enabled (wav/mp3/flac/m4a+aac/ogg decode -> 16 kHz mono s16le WAV) and NO GPL/nonfree components, so
+# the result is LGPL-2.1 and ~5 MB instead of the ~97 MB GPL "essentials" build. This workflow file +
+# its configure line below ARE the corresponding/relink source required for LGPL compliance.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpeg_tag:
+        description: "FFmpeg git tag to build"
+        default: "n7.1.1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Set up MSYS2 / MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git make pkgconf diffutils
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-nasm
+
+      - name: Clone FFmpeg ${{ github.event.inputs.ffmpeg_tag }}
+        run: git clone --depth 1 --branch "${{ github.event.inputs.ffmpeg_tag }}" https://github.com/FFmpeg/FFmpeg.git ffmpeg
+
+      - name: Configure (minimal, static, LGPL — decode-only)
+        working-directory: ffmpeg
+        run: |
+          ./configure \
+            --arch=x86_64 --target-os=mingw64 \
+            --disable-all --disable-doc --disable-network --disable-autodetect \
+            --enable-small --disable-shared --enable-static \
+            --extra-ldflags="-static" \
+            --enable-avcodec --enable-avformat --enable-swresample --enable-avfilter \
+            --enable-ffmpeg \
+            --enable-protocol=file \
+            --enable-demuxer=wav,mov,mp3,flac,ogg,aac \
+            --enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_u8,pcm_f32le,pcm_s16be,mp3float,flac,vorbis,aac \
+            --enable-parser=aac,mpegaudio,flac,vorbis \
+            --enable-filter=aresample,aformat,anull \
+            --enable-encoder=pcm_s16le \
+            --enable-muxer=wav
+
+      - name: Build
+        working-directory: ffmpeg
+        run: make -j$(nproc)
+
+      - name: Smoke test
+        working-directory: ffmpeg
+        run: ./ffmpeg.exe -hide_banner -version
+
+      - name: Package + checksum
+        shell: pwsh
+        run: |
+          $stage = "staging"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item ffmpeg/ffmpeg.exe $stage/
+          Copy-Item ffmpeg/COPYING.LGPLv2.1 "$stage/ffmpeg-LICENSE.txt"
+          "ffmpeg.exe size: {0:N2} MB" -f ((Get-Item ffmpeg/ffmpeg.exe).Length / 1MB)
+          Compress-Archive -Path "$stage/*" -DestinationPath ffmpeg-min-windows-x64.zip -Force
+          $h = (Get-FileHash ffmpeg-min-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$h  ffmpeg-min-windows-x64.zip" | Set-Content -Encoding ascii ffmpeg-min-windows-x64.zip.sha256
+
+      - name: Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "ffmpeg-min-${{ github.event.inputs.ffmpeg_tag }}"
+          gh release delete $tag --repo ${{ github.repository }} --yes --cleanup-tag 2>$null
+          $LASTEXITCODE = 0
+          gh release create $tag ffmpeg-min-windows-x64.zip ffmpeg-min-windows-x64.zip.sha256 `
+            --repo ${{ github.repository }} `
+            --title $tag `
+            --notes "Minimal decode-only LGPL-2.1 FFmpeg ${{ github.event.inputs.ffmpeg_tag }} (wav/mp3/flac/m4a+aac/ogg decode to pcm_s16le wav). Built by .github/workflows/build.yml in this repo." `
+            --latest
+
