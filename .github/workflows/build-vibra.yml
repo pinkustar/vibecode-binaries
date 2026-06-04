@@ -12,7 +12,7 @@ on:
     inputs:
       vibra_ref:
         description: "BayernMuller/vibra git ref (commit SHA / branch / tag)"
-        default: "fd5a03a44a4b61b4044cdf876bb7ad087621d589"
+        default: "cc75d0abb86517891648aa7208f426672d9dd59d"
 
 permissions:
   contents: write
