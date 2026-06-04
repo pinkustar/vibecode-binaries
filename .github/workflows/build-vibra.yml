@@ -19,7 +19,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-2022
+    # Latest GitHub Windows image (Server 2025 / VS 2026). Early dev: ride current latest, not pinned.
+    runs-on: windows-2025
     steps:
       - name: Clone vibra @ ref
         shell: pwsh
