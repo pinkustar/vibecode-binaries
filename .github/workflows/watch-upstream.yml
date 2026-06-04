@@ -1,0 +1,66 @@
+name: watch-upstream
+
+# Notifier, NOT a builder. Runs daily and opens a GitHub issue when either upstream the engine
+# binaries are built from has moved past what this factory currently ships. Nothing is rebuilt and no
+# binary changes — the SHA pin in vibecode's engine/manifest.json stays authoritative; you bump
+# deliberately (dispatch the matching build-*.yml, re-pin, verify). The "current pin" is read from THIS
+# repo's own latest release, so it self-updates whenever you rebuild — there is no value to maintain
+# here. Cross-repo push triggers don't exist for repos we don't own, so a scheduled poll is the only
+# way to learn upstream advanced; this polls and *tells you*, instead of rebuilding + churning SHAs.
+
+on:
+  schedule:
+    - cron: "13 7 * * *" # daily ~07:13 UTC
+  workflow_dispatch: {} # "check now"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  ffmpeg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify if FFmpeg has a newer stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Current pin = newest ffmpeg-min-* release in this factory, minus the prefix.
+          pin=$(gh release list --json tagName --jq '[.[].tagName | select(startswith("ffmpeg-min-"))][0] // ""' | sed 's/^ffmpeg-min-//')
+          # Latest upstream STABLE tag (nMAJOR.MINOR[.PATCH]); ignore dev/rc tags.
+          latest=$(gh api repos/FFmpeg/FFmpeg/tags --paginate --jq '.[].name' \
+            | grep -E '^n[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)
+          echo "ffmpeg pin='$pin' latest='$latest'"
+          [ -n "$pin" ] && [ -n "$latest" ] || { echo "could not resolve versions; skipping"; exit 0; }
+          [ "$pin" != "$latest" ] || { echo "up to date"; exit 0; }
+          existing=$(gh issue list --state open --limit 200 --json title --jq '[.[].title | select(startswith("ffmpeg upstream moved"))] | length')
+          [ "$existing" = "0" ] || { echo "an open ffmpeg issue already exists; skipping"; exit 0; }
+          gh issue create \
+            --title "ffmpeg upstream moved: $pin -> $latest" \
+            --body "$(printf 'FFmpeg has a newer stable tag (`%s`) than this factory pins (`%s`).\n\nHeads-up only — nothing was rebuilt; vibecode still pins the current binary by SHA.\n\n**To take it:** dispatch **build-ffmpeg** with `ffmpeg_tag=%s`, then in vibecode re-pin `engine/manifest.json` (URL + SHA + size) and run compliance. A major bump (e.g. n7 -> n8) may need the `configure` line revisited.\n\nClose this issue once bumped (or to silence it until the next move).' "$latest" "$pin" "$latest")"
+
+  vibra:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify if BayernMuller/vibra is ahead of the pin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Current pin sha = trailing segment of the newest vibra-* release tag (vibra-<date>-<shortsha>).
+          tag=$(gh release list --json tagName --jq '[.[].tagName | select(startswith("vibra-"))][0] // ""')
+          pin="${tag##*-}"
+          [ -n "$pin" ] || { echo "no vibra-* release found; skipping"; exit 0; }
+          ahead=$(gh api "repos/BayernMuller/vibra/compare/${pin}...main" --jq '.ahead_by' 2>/dev/null || echo "")
+          [ -n "$ahead" ] || { echo "compare against pin '$pin' failed; skipping"; exit 0; }
+          echo "vibra pin='$pin' ahead_by=$ahead"
+          [ "$ahead" -gt 0 ] || { echo "up to date"; exit 0; }
+          head=$(gh api repos/BayernMuller/vibra/commits/main --jq '.sha[0:12]')
+          existing=$(gh issue list --state open --limit 200 --json title --jq '[.[].title | select(startswith("vibra upstream moved"))] | length')
+          [ "$existing" = "0" ] || { echo "an open vibra issue already exists; skipping"; exit 0; }
+          gh issue create \
+            --title "vibra upstream moved: $ahead commit(s) ahead (head $head)" \
+            --body "$(printf 'BayernMuller/vibra `main` is `%s` commit(s) ahead of the pinned sha (`%s`); current head is `%s`.\n\nHeads-up only — nothing was rebuilt. A vibra bump changes fingerprint/Shazam behavior, so it needs **real-song validation** (the `Category=Integration` test) after re-pinning.\n\n**To take it:** dispatch **build-vibra** with `vibra_ref=main` (or a specific sha), re-pin vibecode `engine/manifest.json`, run the integration test against a real song, then commit.\n\nCompare: https://github.com/BayernMuller/vibra/compare/%s...main\n\nClose this issue once bumped (or to silence it until the next move).' "$ahead" "$pin" "$head" "$pin")"
