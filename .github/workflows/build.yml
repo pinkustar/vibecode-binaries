@@ -42,6 +42,7 @@ jobs:
             --arch=x86_64 --target-os=mingw64 \
             --disable-all --disable-doc --disable-network --disable-autodetect \
             --enable-small --disable-shared --enable-static \
+            --extra-ldflags="-static" \
             --enable-avcodec --enable-avformat --enable-swresample --enable-avfilter \
             --enable-ffmpeg \
             --enable-protocol=file \
