@@ -1,0 +1,85 @@
+name: build-vibra
+
+# Builds the vibra CLI (BayernMuller/vibra — the Shazam fingerprinting engine vibecode shells out to)
+# for Windows x64, cloning upstream at a pinned ref. No fork, no branch mirror, no sync: we clone the
+# exact ref fresh in CI and publish a release zip (vibra.exe + its runtime DLLs) + .sha256, exactly
+# like build-ffmpeg.yml in this repo. vibecode pins the published zip by URL + SHA-256 in
+# engine/manifest.json. vibra is Apache-2.0; upstream vendors KissFFT (BSD) + args (in-tree), so there
+# are no submodules and no GPL FFTW dependency.
+
+on:
+  workflow_dispatch:
+    inputs:
+      vibra_ref:
+        description: "BayernMuller/vibra git ref (commit SHA / branch / tag)"
+        default: "fd5a03a44a4b61b4044cdf876bb7ad087621d589"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Clone vibra @ ref
+        shell: pwsh
+        run: |
+          git clone https://github.com/BayernMuller/vibra.git vibra
+          git -C vibra checkout "${{ github.event.inputs.vibra_ref }}"
+          "built_sha=$(git -C vibra rev-parse --short HEAD)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: Install dependencies (vcpkg)
+        shell: pwsh
+        run: vcpkg install curl:x64-windows
+
+      - name: Configure CMake
+        working-directory: vibra
+        shell: pwsh
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Build
+        working-directory: vibra
+        shell: pwsh
+        run: cmake --build build --config Release
+
+      - name: Smoke test (--help must exit 0)
+        working-directory: vibra
+        shell: pwsh
+        run: |
+          $exe = "build\cli\Release\vibra.exe"
+          if (-not (Test-Path $exe)) { throw "vibra.exe not found at $exe" }
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw "vibra.exe --help exited $LASTEXITCODE" }
+
+      - name: Package + checksum
+        working-directory: vibra
+        shell: pwsh
+        run: |
+          $rel = "build\cli\Release"
+          $stage = "$env:GITHUB_WORKSPACE\staging"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "$rel\vibra.exe" $stage
+          $dlls = Get-ChildItem "$rel\*.dll"
+          if ($dlls.Count -eq 0) { throw "no runtime DLLs found next to vibra.exe" }
+          $dlls | Copy-Item -Destination $stage
+          Get-ChildItem $stage | Format-Table Name, Length
+          $zip = "$env:GITHUB_WORKSPACE\vibra-windows-x64.zip"
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$h  vibra-windows-x64.zip" | Set-Content -Encoding ascii "$zip.sha256"
+
+      - name: Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "vibra-$(Get-Date -Format yyyyMMdd)-$env:built_sha"
+          gh release delete $tag --repo ${{ github.repository }} --yes --cleanup-tag 2>$null
+          $LASTEXITCODE = 0
+          gh release create $tag `
+            "$env:GITHUB_WORKSPACE\vibra-windows-x64.zip" `
+            "$env:GITHUB_WORKSPACE\vibra-windows-x64.zip.sha256" `
+            --repo ${{ github.repository }} `
+            --title $tag `
+            --notes "vibra CLI (BayernMuller/vibra @ $env:built_sha) Windows x64, built by .github/workflows/build-vibra.yml." `
+            --latest
